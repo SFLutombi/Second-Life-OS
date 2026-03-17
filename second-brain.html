@@ -453,16 +453,77 @@ textarea{resize:vertical;line-height:1.6}
 
 <script>
 const SK='sb_v3';
+const DB_NAME='second_brain_db';
+const DB_VERSION=1;
+const STORE_NAME='state';
+const STATE_KEY='app_state';
 let S={tasks:[],goals:[],events:[],timeLog:[],journal:[],heatmap:{},matrix:{q1:[],q2:[],q3:[],q4:[]}};
+let dbPromise=null;
 
-function load(){
-  try{const r=localStorage.getItem(SK);if(r){const p=JSON.parse(r);Object.assign(S,p);}}catch(e){}
+function openDB(){
+  if(dbPromise)return dbPromise;
+  dbPromise=new Promise((resolve,reject)=>{
+    const req=indexedDB.open(DB_NAME,DB_VERSION);
+    req.onupgradeneeded=()=>{
+      const db=req.result;
+      if(!db.objectStoreNames.contains(STORE_NAME))db.createObjectStore(STORE_NAME);
+    };
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error);
+  });
+  return dbPromise;
+}
+
+async function idbGetState(){
+  const db=await openDB();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(STORE_NAME,'readonly');
+    const store=tx.objectStore(STORE_NAME);
+    const req=store.get(STATE_KEY);
+    req.onsuccess=()=>resolve(req.result||null);
+    req.onerror=()=>reject(req.error);
+  });
+}
+
+async function idbSetState(state){
+  const db=await openDB();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(STORE_NAME,'readwrite');
+    tx.oncomplete=()=>resolve();
+    tx.onerror=()=>reject(tx.error);
+    tx.objectStore(STORE_NAME).put(state,STATE_KEY);
+  });
+}
+
+async function migrateLocalStorageIfNeeded(){
+  try{
+    const legacy=localStorage.getItem(SK);
+    if(!legacy)return;
+    const parsed=JSON.parse(legacy);
+    await idbSetState(parsed);
+    localStorage.removeItem(SK);
+  }catch(e){}
+}
+
+async function load(){
+  try{
+    let saved=await idbGetState();
+    if(!saved){
+      await migrateLocalStorageIfNeeded();
+      saved=await idbGetState();
+    }
+    if(saved)Object.assign(S,saved);
+  }catch(e){
+    try{const r=localStorage.getItem(SK);if(r){const p=JSON.parse(r);Object.assign(S,p);}}catch(err){}
+  }
   if(!S.matrix)S.matrix={q1:[],q2:[],q3:[],q4:[]};
   ['q1','q2','q3','q4'].forEach(q=>{if(!S.matrix[q])S.matrix[q]=[]});
   renderAll();
 }
 function save(){
-  try{localStorage.setItem(SK,JSON.stringify(S))}catch(e){}
+  idbSetState(S).catch(()=>{
+    try{localStorage.setItem(SK,JSON.stringify(S))}catch(e){}
+  });
   renderAll();
 }
 function uid(){return Math.random().toString(36).slice(2,9)}
